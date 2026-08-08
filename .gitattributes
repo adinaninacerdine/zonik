@@ -1,0 +1,26 @@
+# Normalisation : LF dans le dépôt, quelle que soit la plateforme
+* text=auto eol=lf
+
+# Scripts Windows : doivent rester en CRLF
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Scripts Unix : LF obligatoire
+*.sh    text eol=lf
+gradlew text eol=lf
+
+# Binaires — jamais de conversion
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.tflite binary
+*.jks   binary
+*.keystore binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
+*.apk   binary
+*.aab   binary
