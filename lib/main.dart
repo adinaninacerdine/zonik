@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'features/attendance/home_screen.dart';
 import 'features/auth/auth_controller.dart';
+import 'features/auth/change_pin_screen.dart';
 import 'features/auth/login_screen.dart';
 
 Future<void> main() async {
@@ -31,12 +32,19 @@ class ZonikApp extends StatelessWidget {
   }
 }
 
+/// Aiguillage : pas de session -> login ; PIN d'amorçage -> changement
+/// obligatoire ; sinon -> accueil (enrôlement du visage puis pointage).
 class _Root extends ConsumerWidget {
   const _Root();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final auth = ref.watch(authControllerProvider);
+    // Pendant un changement de PIN qui échoue, on garde l'écran de PIN.
+    final session = auth.value;
+    if (session != null && session.mustChangePin) {
+      return const ChangePinScreen();
+    }
     return auth.when(
       loading: () => const Scaffold(
         body: Center(child: CircularProgressIndicator()),

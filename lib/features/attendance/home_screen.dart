@@ -9,6 +9,7 @@ import '../../providers.dart';
 import '../auth/auth_controller.dart';
 import '../face/enroll_screen.dart';
 import '../liveness/liveness_screen.dart';
+import '../planning/planning_repository.dart';
 import 'punch_repository.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -140,6 +141,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final session = ref.watch(authControllerProvider).value;
     final pending = ref.watch(pendingCountProvider).value ?? 0;
     final recent = ref.watch(recentPunchesProvider).value ?? const [];
+    final today = ref.watch(todayShiftsProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -177,18 +179,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        session?.matricule ?? '',
+                        session?.fullName.isNotEmpty == true
+                            ? session!.fullName
+                            : (session?.matricule ?? ''),
                         style: const TextStyle(
                             fontSize: 16, fontWeight: FontWeight.bold),
                       ),
                       Text(
-                        session?.tenantSlug ?? '',
+                        session?.fullName.isNotEmpty == true
+                            ? '${session!.matricule} · ${session.tenantSlug}'
+                            : (session?.tenantSlug ?? ''),
                         style: TextStyle(color: Colors.grey.shade600),
                       ),
                     ],
                   ),
                 ),
               ],
+            ),
+          ),
+          // Vacation du jour, tirée du planning. Masquée hors ligne.
+          today.when(
+            loading: () => const SizedBox.shrink(),
+            error: (_, _) => const SizedBox.shrink(),
+            data: (shifts) => _TodayCard(
+              shifts: shifts,
+              onRefresh: () => ref.invalidate(todayShiftsProvider),
             ),
           ),
           Padding(
@@ -244,6 +259,91 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Carte "Ma vacation" : où et quand l'agent est attendu aujourd'hui.
+class _TodayCard extends StatelessWidget {
+  const _TodayCard({required this.shifts, required this.onRefresh});
+
+  final List<MyShift> shifts;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final hm = DateFormat('HH:mm');
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      child: Card(
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Aujourd\'hui',
+                      style: theme.textTheme.labelMedium
+                          ?.copyWith(color: Colors.grey.shade600),
+                    ),
+                    const SizedBox(height: 4),
+                    if (shifts.isEmpty)
+                      Text(
+                        'Aucune vacation planifiée pour vous.',
+                        style: theme.textTheme.bodyMedium,
+                      )
+                    else
+                      for (final s in shifts) ...[
+                        Row(
+                          children: [
+                            Icon(
+                              s.isNow ? Icons.play_circle : Icons.schedule,
+                              size: 18,
+                              color: s.isNow ? Colors.green : Colors.teal,
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                '${s.siteName.isNotEmpty ? s.siteName : 'Site'} · '
+                                '${hm.format(s.startsAt)}–${hm.format(s.endsAt)}',
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                          ],
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.only(left: 24, top: 2),
+                          child: Text(
+                            [
+                              if (s.postName.isNotEmpty) s.postName,
+                              if (s.role == 'remplacant') 'remplacement',
+                              if (s.role == 'renfort') 'renfort',
+                              if (s.isNow) 'en cours',
+                            ].join(' · '),
+                            style: TextStyle(
+                                color: Colors.grey.shade600, fontSize: 12),
+                          ),
+                        ),
+                        if (s != shifts.last) const SizedBox(height: 8),
+                      ],
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: 'Actualiser',
+                icon: const Icon(Icons.refresh, size: 20),
+                onPressed: onRefresh,
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

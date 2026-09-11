@@ -31,12 +31,24 @@ class ApiClient {
     String path,
     Map<String, dynamic> body, {
     bool authenticated = true,
-  }) =>
-      _send('POST', path, body: body, authenticated: authenticated);
+  }) async {
+    final decoded = await _send('POST', path, body: body, authenticated: authenticated);
+    return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+  }
 
-  Future<Map<String, dynamic>> get(String path) => _send('GET', path);
+  /// Réponse objet JSON.
+  Future<Map<String, dynamic>> get(String path) async {
+    final decoded = await _send('GET', path);
+    return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+  }
 
-  Future<Map<String, dynamic>> _send(
+  /// Réponse tableau JSON (listes : vacations, pénalités...).
+  Future<List<dynamic>> getList(String path) async {
+    final decoded = await _send('GET', path);
+    return decoded is List ? decoded : <dynamic>[];
+  }
+
+  Future<dynamic> _send(
     String method,
     String path, {
     Map<String, dynamic>? body,
@@ -66,15 +78,14 @@ class ApiClient {
       throw ApiException(null, 'Erreur réseau.');
     }
 
-    final decoded = response.body.isEmpty
-        ? <String, dynamic>{}
-        : jsonDecode(response.body);
-    final json =
-        decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+    final dynamic decoded =
+        response.body.isEmpty ? <String, dynamic>{} : jsonDecode(response.body);
 
     if (response.statusCode >= 200 && response.statusCode < 300) {
-      return json;
+      return decoded;
     }
+    final json =
+        decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
     final message = (json['message'] ?? json['error'] ?? 'Erreur serveur')
         .toString();
     throw ApiException(response.statusCode, message);

@@ -8,6 +8,7 @@ import 'features/attendance/sync_service.dart';
 import 'features/auth/auth_repository.dart';
 import 'features/face/face_repository.dart';
 import 'features/face/face_service.dart';
+import 'features/planning/planning_repository.dart';
 
 final databaseProvider = Provider<AppDatabase>((ref) {
   final db = AppDatabase();
@@ -56,6 +57,16 @@ final faceRepositoryProvider = Provider<FaceRepository>((ref) {
     api: ref.watch(apiClientProvider),
     storage: ref.watch(secureStorageProvider),
   );
+});
+
+final planningRepositoryProvider = Provider<PlanningRepository>((ref) {
+  return PlanningRepository(api: ref.watch(apiClientProvider));
+});
+
+/// Vacations du jour de l'agent connecté (planning). Hors ligne : erreur
+/// silencieuse, l'écran d'accueil masque simplement la carte.
+final todayShiftsProvider = FutureProvider.autoDispose<List<MyShift>>((ref) {
+  return ref.watch(planningRepositoryProvider).today();
 });
 
 /// Nombre de pointages en attente de synchronisation.
