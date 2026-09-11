@@ -21,8 +21,14 @@ if (keystorePropertiesFile.exists()) {
 android {
     namespace = "com.zonik.pointage"
     compileSdk = flutter.compileSdkVersion
-    // Pas de ndkVersion : aucun code natif à compiler ici, et le NDK (~4 Go)
-    // ne tient pas sur le disque. Les .so des plugins sont préconstruits.
+
+    // ndkVersion est indispensable même sans code natif à compiler : c'est
+    // l'outil `strip` du NDK que Gradle utilise pour retirer les symboles de
+    // debug des .so de Flutter et des plugins. Sans lui, libflutter.so est
+    // emballé tel quel (~165 Mo par architecture au lieu de ~10 Mo).
+    // La version attendue est celle de flutter.ndkVersion (28.2.13676358 pour
+    // Flutter 3.44) — installée via sdkmanager --install "ndk;<version>".
+    ndkVersion = flutter.ndkVersion
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -40,10 +46,9 @@ android {
         versionName = flutter.versionName
     }
 
-    // Le plugin Gradle de Flutter (forceNdkDownload) branche un CMakeLists
-    // factice uniquement pour déclencher le téléchargement du NDK (~4 Go),
-    // au service des "native assets" Dart. Ce projet n'en utilise aucun et
-    // le disque ne peut pas accueillir le NDK : on débranche ce CMake.
+    // Le plugin Gradle de Flutter branche un CMakeLists factice pour les
+    // "native assets" Dart. Ce projet n'en utilise aucun : on le débranche,
+    // ce qui n'empêche pas le strip des bibliothèques (étape de packaging).
     externalNativeBuild {
         cmake {
             path = null
@@ -64,6 +69,8 @@ android {
     buildTypes {
         release {
             // Repli sur la clé debug si key.properties absent (poste sans secrets).
+            // ATTENTION : un APK signé en debug ne doit jamais être distribué aux
+            // clients — la première mise à jour signée release serait refusée.
             signingConfig = if (keystorePropertiesFile.exists())
                 signingConfigs.getByName("release")
             else

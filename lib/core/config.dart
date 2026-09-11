@@ -2,8 +2,10 @@
 class AppConfig {
   AppConfig._();
 
-  /// Backend Node/Express + PostGIS (VPS).
-  static const String apiBaseUrl = 'http://31.207.37.178:3001';
+  /// Backend Node/Express + PostGIS (VPS), servi en HTTPS par Caddy.
+  /// Ne jamais remettre l'IP brute ici : le certificat n'est valable que
+  /// pour le nom de domaine, et le manifest n'autorise plus le HTTP.
+  static const String apiBaseUrl = 'https://api.zonik.info';
 
   /// Délai max pour obtenir une position GPS avant fallback.
   static const Duration gpsTimeout = Duration(seconds: 15);
