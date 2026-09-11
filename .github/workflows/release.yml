@@ -1,0 +1,90 @@
+# Construit l'APK Android signé (release, une variante par architecture) sur
+# les serveurs GitHub et publie la release dans le dépôt public zonik-releases.
+#
+# Déclenchement : un tag vX.Y.Z poussé sur ce dépôt.
+#   git tag v1.1.0 && git push origin v1.1.0
+#
+# Secrets attendus (Settings → Secrets and variables → Actions) :
+#   KEYSTORE_BASE64        android/keystore/zonik-release.jks encodé en base64
+#   KEY_PROPERTIES_BASE64  android/key.properties encodé en base64
+#   RELEASES_TOKEN         token fine-grained avec Contents: Read and write sur zonik-releases
+name: Release Android
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NDK_VERSION: "28.2.13676358"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: "3.44.4"
+          cache: true
+
+      # Le NDK sert à stripper libflutter.so (163 Mo → 11 Mo). Sa version doit
+      # être celle de flutter.ndkVersion, déclarée dans android/app/build.gradle.kts.
+      - name: Installer le NDK
+        run: echo "y" | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VERSION}" > /dev/null
+
+      - name: Restaurer la signature release
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEY_PROPERTIES_BASE64: ${{ secrets.KEY_PROPERTIES_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64" || { echo "Secret KEYSTORE_BASE64 manquant"; exit 1; }
+          test -n "$KEY_PROPERTIES_BASE64" || { echo "Secret KEY_PROPERTIES_BASE64 manquant"; exit 1; }
+          mkdir -p android/keystore
+          echo "$KEYSTORE_BASE64" | base64 -d > android/keystore/zonik-release.jks
+          echo "$KEY_PROPERTIES_BASE64" | base64 -d > android/key.properties
+
+      - name: Dépendances
+        run: flutter pub get
+
+      - name: Construire les APK
+        run: flutter build apk --release --split-per-abi
+
+      - name: Vérifier la signature et la taille
+        run: |
+          set -e
+          cd build/app/outputs/flutter-apk
+          cp app-arm64-v8a-release.apk zonik.apk
+          cp app-armeabi-v7a-release.apk zonik-armv7.apk
+          APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner"
+          "$APKSIGNER" verify --print-certs zonik.apk | grep -m1 "Signer #1 certificate SHA-256"
+          SIZE=$(stat -c %s zonik.apk)
+          echo "zonik.apk : $((SIZE / 1048576)) Mo"
+          test "$SIZE" -lt 120000000 || { echo "APK anormalement gros : strip probablement absent"; exit 1; }
+
+      - name: Publier dans zonik-releases
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: adinaninacerdine/zonik-releases
+          token: ${{ secrets.RELEASES_TOKEN }}
+          tag_name: ${{ github.ref_name }}
+          name: Zonik ${{ github.ref_name }}
+          body: |
+            Pointage géolocalisé, kiosque partagé, planning.
+            - `zonik.apk` — téléphones récents (arm64, la grande majorité)
+            - `zonik-armv7.apk` — anciens téléphones 32 bits
+            À l'installation, Android demande d'autoriser les « sources inconnues » : acceptez pour ce fichier.
+          files: |
+            build/app/outputs/flutter-apk/zonik.apk
+            build/app/outputs/flutter-apk/zonik-armv7.apk
