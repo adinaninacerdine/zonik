@@ -7,27 +7,35 @@ import 'package:http/http.dart' as http;
 import 'config.dart';
 
 class ApiException implements Exception {
-  ApiException(this.statusCode, this.message);
+  ApiException(this.statusCode, this.message, {this.fromApi = false});
 
   /// Code HTTP, ou null si la requête n'a pas atteint le serveur.
   final int? statusCode;
   final String message;
 
+  /// La réponse d'erreur était du JSON : c'est bien notre API qui a répondu
+  /// (et pas un portail captif, un proxy opérateur ou une page Caddy).
+  final bool fromApi;
+
+  /// Token refusé ou expiré.
   bool get isUnauthorized => statusCode == 401;
+
+  /// Accès refusé (agent désactivé, tenant suspendu…).
+  bool get isForbidden => statusCode == 403;
 
   /// Pas de réponse du serveur (pas de réseau, délai, DNS…).
   bool get isNetwork => statusCode == null;
 
-  /// Le serveur refuse la requête elle-même : la renvoyer telle quelle ne
-  /// changera rien. 401 (session), 408 (délai) et 429 (trop de requêtes)
-  /// sont des cas à part, temporaires.
+  /// Le serveur refuse le CONTENU de la requête : la renvoyer telle quelle
+  /// ne changera rien. Volontairement étroit — un 404 ou une page HTML en
+  /// 4xx viennent de l'infrastructure, pas des données, et restent
+  /// temporaires (sinon on refuserait à tort des pointages valides).
   bool get isPermanent =>
-      statusCode != null &&
-      statusCode! >= 400 &&
-      statusCode! < 500 &&
-      statusCode != 401 &&
-      statusCode != 408 &&
-      statusCode != 429;
+      statusCode == 413 ||
+      (fromApi && (statusCode == 400 || statusCode == 422));
+
+  /// Conflit : la donnée existe déjà côté serveur.
+  bool get isConflict => statusCode == 409;
 
   @override
   String toString() => message;
@@ -98,13 +106,16 @@ class ApiClient {
     Map<String, dynamic>? body,
     bool authenticated = true,
     Duration timeout = defaultTimeout,
+    String? bearer,
   }) async {
     final headers = <String, String>{
       'Content-Type': 'application/json',
       'Accept': 'application/json',
     };
     if (authenticated) {
-      final token = await tokenReader();
+      // [bearer] : token imposé par l'appelant (la sync envoie les pointages
+      // d'un agent avec le token de CET agent, pas celui du moment).
+      final token = bearer ?? await tokenReader();
       if (token == null) {
         throw ApiException(401, 'Session expirée, reconnectez-vous.');
       }
@@ -131,6 +142,7 @@ class ApiClient {
     }
 
     dynamic decoded;
+    var isJson = response.body.isNotEmpty;
     try {
       decoded = response.body.isEmpty
           ? <String, dynamic>{}
@@ -142,6 +154,7 @@ class ApiClient {
         throw ApiException(null, 'Réponse inattendue (réseau filtré ?).');
       }
       decoded = <String, dynamic>{};
+      isJson = false;
     }
 
     if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -155,7 +168,7 @@ class ApiClient {
         decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
     final message = (json['message'] ?? json['error'] ?? _defaultMessage(response.statusCode))
         .toString();
-    throw ApiException(response.statusCode, message);
+    throw ApiException(response.statusCode, message, fromApi: isJson);
   }
 
   static String _defaultMessage(int status) {

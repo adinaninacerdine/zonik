@@ -79,19 +79,18 @@ class PlanningRepository {
       '${d.month.toString().padLeft(2, '0')}-'
       '${d.day.toString().padLeft(2, '0')}';
 
-  /// Vacations de [owner] qui chevauchent aujourd'hui (locale du téléphone).
-  Stream<List<MyShift>> watchToday(Owner owner) {
-    final now = DateTime.now();
-    final from = DateTime(now.year, now.month, now.day);
+  /// Vacations de [owner] qui chevauchent le jour [day] (minuit local).
+  Stream<List<MyShift>> watchDay(Owner owner, DateTime day) {
+    final from = DateTime(day.year, day.month, day.day);
     final to = from.add(const Duration(days: 1));
     return db
         .watchShifts(owner, from, to)
         .map((rows) => rows.map(MyShift.fromRow).toList());
   }
 
-  /// Date du dernier téléchargement réussi (affichée hors ligne).
-  Stream<DateTime?> watchFetchedAt() => db
-      .watchMeta(kContextFetchedAt)
+  /// Date du dernier téléchargement réussi pour [owner] (affichée hors ligne).
+  Stream<DateTime?> watchFetchedAt(Owner owner) => db
+      .watchMeta(_fetchedKey(owner))
       .map((v) => v == null ? null : DateTime.tryParse(v)?.toLocal());
 
   /// Télécharge vacations et sites si le cache a plus de
@@ -100,20 +99,23 @@ class PlanningRepository {
   /// d'échec — l'appelant l'ignore : le cache existant reste valable.
   Future<bool> refresh({bool force = false}) async {
     if (_refreshing) return false;
-    final owner = await ownerReader();
-    if (owner == null) return false;
-
-    if (!force) {
-      final last =
-          DateTime.tryParse(await db.getMeta(_fetchedKey(owner)) ?? '');
-      if (last != null &&
-          DateTime.now().difference(last) < AppConfig.contextRefreshInterval) {
-        return false;
-      }
-    }
-
+    // Posé AVANT tout await : deux déclenchements simultanés (connexion +
+    // démarrage de l'écran) ne téléchargent qu'une fois.
     _refreshing = true;
     try {
+      final owner = await ownerReader();
+      if (owner == null) return false;
+
+      if (!force) {
+        final last =
+            DateTime.tryParse(await db.getMeta(_fetchedKey(owner)) ?? '');
+        if (last != null &&
+            DateTime.now().difference(last) <
+                AppConfig.contextRefreshInterval) {
+          return false;
+        }
+      }
+
       final now = DateTime.now();
       final today = DateTime(now.year, now.month, now.day);
       final from = today.subtract(const Duration(days: AppConfig.shiftsDaysBack));
@@ -163,9 +165,8 @@ class PlanningRepository {
         await db.upsertSites(derivedSites.values.toList());
       }
 
-      final stamp = DateTime.now().toUtc().toIso8601String();
-      await db.setMeta(_fetchedKey(owner), stamp);
-      await db.setMeta(kContextFetchedAt, stamp);
+      await db.setMeta(
+          _fetchedKey(owner), DateTime.now().toUtc().toIso8601String());
       return true;
     } finally {
       _refreshing = false;

@@ -66,6 +66,22 @@ class AuthRepository {
     return Owner(tenant, matricule);
   }
 
+  /// Agent connecté ET son token, lus ensemble : la sync envoie les
+  /// pointages d'un agent avec le token de cet agent, même si un autre se
+  /// connecte pendant l'envoi.
+  Future<({Owner owner, String token})?> currentSyncSession() async {
+    final token = await storage.read(key: _kToken);
+    if (token == null) return null;
+    final tenant = await storage.read(key: _kTenantSlug);
+    final matricule = await storage.read(key: _kMatricule);
+    // Connexion d'un autre agent entre les lectures : on ne mélange pas.
+    if (await storage.read(key: _kToken) != token) return null;
+    if (tenant == null || tenant.isEmpty || matricule == null || matricule.isEmpty) {
+      return null;
+    }
+    return (owner: Owner(tenant, matricule), token: token);
+  }
+
   /// Dernier agent connecté (même déconnecté), pour pré-remplir le login :
   /// après une session expirée, l'agent n'a plus qu'à taper son PIN.
   Future<({String? tenantSlug, String? matricule})> lastIdentity() async {
@@ -91,11 +107,15 @@ class AuthRepository {
     }
     final fullName = (json['fullName'] as String?) ?? '';
     final mustChangePin = json['mustChangePin'] == true;
-    await storage.write(key: _kToken, value: token);
+    // Ordre voulu : ancien token retiré, identité écrite, nouveau token en
+    // dernier. Un lecteur (la sync) ne voit jamais un token associé à
+    // l'identité d'un autre agent — voir currentSyncSession().
+    await storage.delete(key: _kToken);
     await storage.write(key: _kTenantSlug, value: tenantSlug);
     await storage.write(key: _kMatricule, value: matricule);
     await storage.write(key: _kFullName, value: fullName);
     await storage.write(key: _kMustChangePin, value: mustChangePin.toString());
+    await storage.write(key: _kToken, value: token);
     return Session(
       tenantSlug: tenantSlug,
       matricule: matricule,

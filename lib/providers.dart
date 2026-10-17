@@ -52,7 +52,7 @@ final syncEngineProvider = Provider<SyncEngine>((ref) {
   final engine = SyncEngine(
     db: ref.watch(databaseProvider),
     api: ref.watch(apiClientProvider),
-    ownerReader: auth.currentOwner,
+    sessionReader: auth.currentSyncSession,
   );
   ref.onDispose(engine.dispose);
   return engine;
@@ -95,17 +95,39 @@ final ownerProvider = Provider<Owner?>((ref) {
   return ref.watch(authControllerProvider).value?.owner;
 });
 
+/// Jour courant (minuit local). Change à minuit : la carte « Aujourd'hui »
+/// passe au lendemain même si l'app reste ouverte toute la nuit.
+final currentDayProvider = StreamProvider<DateTime>((ref) async* {
+  DateTime today() {
+    final n = DateTime.now();
+    return DateTime(n.year, n.month, n.day);
+  }
+
+  var day = today();
+  yield day;
+  await for (final _ in Stream<void>.periodic(const Duration(minutes: 1))) {
+    final d = today();
+    if (d != day) {
+      day = d;
+      yield day;
+    }
+  }
+});
+
 /// Vacations du jour de l'agent connecté, lues dans le cache local :
 /// disponibles hors ligne.
 final todayShiftsProvider = StreamProvider<List<MyShift>>((ref) {
   final owner = ref.watch(ownerProvider);
-  if (owner == null) return Stream.value(const <MyShift>[]);
-  return ref.watch(planningRepositoryProvider).watchToday(owner);
+  final day = ref.watch(currentDayProvider).value;
+  if (owner == null || day == null) return Stream.value(const <MyShift>[]);
+  return ref.watch(planningRepositoryProvider).watchDay(owner, day);
 });
 
-/// Date du dernier téléchargement du planning (fraîcheur du cache).
+/// Date du dernier téléchargement du planning de l'agent connecté.
 final planningFetchedAtProvider = StreamProvider<DateTime?>((ref) {
-  return ref.watch(planningRepositoryProvider).watchFetchedAt();
+  final owner = ref.watch(ownerProvider);
+  if (owner == null) return Stream.value(null);
+  return ref.watch(planningRepositoryProvider).watchFetchedAt(owner);
 });
 
 /// Nombre de pointages de l'agent connecté en attente de synchronisation.

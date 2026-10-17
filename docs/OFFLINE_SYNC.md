@@ -12,11 +12,13 @@ déjà avec le backend actuel** : tout ce qui est nouveau est soit rangé dans l
 | Pointage | Écrit en SQLite immédiatement, jamais bloqué par le réseau. Attaché à l'agent (tenant + matricule). |
 | Heure | Heure du téléphone **+** horloge monotone Android (`elapsedRealtime`, non modifiable) **+** n° de démarrage. |
 | Zone | Contrôle local contre les sites en cache (site de la vacation en cours, sinon le plus proche). Indicatif : PostGIS tranche. |
-| Envoi | Lots de 10 max et ~1,2 Mo de photos max, délai adapté au nombre de photos. Seuls les pointages de l'agent connecté, avec son token. |
+| Envoi | Lots de 10 max et ~1,2 Mo de photos max, délai adapté au nombre de photos. Seuls les pointages de l'agent connecté, avec SON token (figé pour toute la passe, même si un autre agent se connecte pendant l'envoi). |
 | Échec réseau / 5xx / 408 / 429 | Backoff exponentiel par pointage (30 s → 30 min, ±20 %). Bouton « Envoyer » = forcé. |
-| 4xx sur un lot | Lot coupé en deux jusqu'à isoler le pointage fautif ; lui seul est marqué refusé (motif affiché, bouton « Renvoyer »). |
+| 400/422 (JSON de l'API) sur un lot | Lot coupé en deux jusqu'à isoler le pointage fautif ; lui seul est marqué refusé (motif affiché, bouton « Renvoyer »). |
+| 409 sur un pointage seul | Déjà connu du serveur : marqué envoyé. |
 | 413 sur un pointage seul | Renvoyé sans photo plutôt que perdu. |
-| 401 | Sync suspendue, bandeau « Session expirée », pointages intacts ; ils partent dès la reconnexion. |
+| 401 / 403 | Sync suspendue, bandeau « Session expirée », pointages intacts ; ils partent dès la reconnexion. |
+| 404, page HTML (portail captif, proxy) | Temporaire : backoff, jamais de refus. |
 | Après envoi | Photo effacée du téléphone. Historique synchronisé purgé après 30 jours. |
 | Planning / sites | Téléchargés (hier → J+7), lus uniquement depuis le cache : visibles une semaine sans réseau. |
 | Déclencheurs | Lancement, retour au premier plan, retour du réseau, toutes les 2 min, après chaque pointage, connexion. |
@@ -61,9 +63,12 @@ Traiter chaque pointage indépendamment et répondre **200** avec :
 ```
 
 `accepted`/`duplicate` → marqué envoyé ; `rejected` → refusé définitivement avec
-le motif affiché à l'agent. Un pointage absent de `results` est considéré
-accepté. Sans `results`, tout le lot est accepté (comportement actuel). Ne
-renvoyer un 4xx global que si la requête entière est invalide.
+le motif affiché à l'agent. **Chaque pointage du lot doit figurer dans
+`results`** : un pointage absent ou au statut inconnu est renvoyé plus tard
+(sans risque grâce à la dédup par `clientUuid`). Sans `results`, tout le lot
+est accepté (comportement actuel). Ne renvoyer un 4xx global que si la requête
+entière est invalide, et toujours en JSON `{ "message": "…" }` : une erreur 4xx
+non-JSON est traitée comme un incident réseau.
 
 ### 2. Heure de confiance (anti-fraude)
 Si `bootCount == sentBootCount` (pas de redémarrage entre pointage et envoi) :

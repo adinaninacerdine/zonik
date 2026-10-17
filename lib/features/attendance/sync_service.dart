@@ -54,6 +54,15 @@ class SyncState {
       );
 }
 
+/// Contexte d'une passe d'envoi : token de l'agent dont on envoie les
+/// pointages, et génération de session au départ.
+class _Ctx {
+  const _Ctx({required this.token, required this.generation});
+
+  final String token;
+  final int generation;
+}
+
 enum _Outcome {
   /// Tous les pointages du lot sont réglés (acceptés ou refusés).
   progress,
@@ -71,13 +80,14 @@ enum _Outcome {
 /// - refus serveur (4xx) d'un lot → lot coupé en deux jusqu'à isoler le
 ///   pointage fautif, seul celui-ci est marqué refusé ;
 /// - 413 sur un pointage seul → renvoi sans la photo plutôt que de le perdre ;
-/// - 401 → sync suspendue jusqu'à reconnexion, rien n'est perdu ;
+/// - 409 sur un pointage seul → déjà connu du serveur, considéré envoyé ;
+/// - 401/403 → sync suspendue jusqu'à reconnexion, rien n'est perdu ;
 /// - chaque réponse mesure le décalage d'horloge du téléphone.
 class SyncEngine {
   SyncEngine({
     required this.db,
     required this.api,
-    required this.ownerReader,
+    required this.sessionReader,
   });
 
   static const kLastSuccessAt = 'lastSyncAt';
@@ -85,8 +95,8 @@ class SyncEngine {
   final AppDatabase db;
   final ApiClient api;
 
-  /// Agent connecté (token présent), null sinon.
-  final Future<Owner?> Function() ownerReader;
+  /// Agent connecté et son token, lus ensemble ; null hors session.
+  final Future<({Owner owner, String token})?> Function() sessionReader;
 
   final _states = StreamController<SyncState>.broadcast();
   final _random = math.Random();
@@ -95,6 +105,10 @@ class SyncEngine {
   bool _running = false;
   bool _again = false;
   bool _againForced = false;
+
+  /// Incrémenté à chaque reconnexion : un 401 reçu pour une requête partie
+  /// avec l'ANCIEN token ne doit pas re-suspendre la sync du nouveau.
+  int _generation = 0;
 
   SyncState get state => _state;
   Stream<SyncState> get states => _states.stream;
@@ -117,6 +131,7 @@ class SyncEngine {
 
   /// Après une reconnexion réussie : la sync reprend.
   void onReauthenticated() {
+    _generation++;
     _emit(_state.copyWith(needsReauth: false, clearError: true));
   }
 
@@ -137,10 +152,20 @@ class SyncEngine {
       var forced = force;
       do {
         _again = false;
-        await _drain(forced: forced);
-        forced = _againForced;
+        try {
+          await _drain(forced: forced);
+        } catch (e) {
+          // Erreur locale inattendue (base, stockage) : jamais d'exception
+          // non gérée depuis un déclencheur ; on retentera au prochain.
+          _emit(_state.copyWith(lastError: 'Erreur locale : $e'));
+        }
+        final forcedAgain = _againForced;
+        forced = forcedAgain;
         _againForced = false;
-      } while (_again && !_state.needsReauth);
+        // Une reconnexion pendant l'envoi a demandé une nouvelle passe
+        // forcée : elle a lieu même si l'ancien token vient d'être refusé.
+        if (_state.needsReauth && !forcedAgain) break;
+      } while (_again);
     } finally {
       _running = false;
       _emit(_state.copyWith(running: false));
@@ -148,8 +173,10 @@ class SyncEngine {
   }
 
   Future<void> _drain({required bool forced}) async {
-    final owner = await ownerReader();
-    if (owner == null) return;
+    final session = await sessionReader();
+    if (session == null) return;
+    final owner = session.owner;
+    final ctx = _Ctx(token: session.token, generation: _generation);
 
     // Lignes de la v1.1 sans propriétaire : elles appartiennent à l'agent
     // qui utilisait le téléphone, donc à la session courante.
@@ -166,7 +193,7 @@ class SyncEngine {
 
       final batch = _takeBatch(pending);
       tried.addAll(batch.map((p) => p.clientUuid));
-      final outcome = await _send(batch);
+      final outcome = await _send(batch, ctx);
       if (outcome == _Outcome.stop) return;
     }
   }
@@ -195,7 +222,7 @@ class SyncEngine {
     return t > AppConfig.syncMaxTimeout ? AppConfig.syncMaxTimeout : t;
   }
 
-  Future<_Outcome> _send(List<Punch> batch) async {
+  Future<_Outcome> _send(List<Punch> batch, _Ctx ctx) async {
     final clock = await DeviceClock.sample();
     final sentAt = DateTime.now();
 
@@ -205,6 +232,7 @@ class SyncEngine {
         '/api/attendance/sync',
         body: {'punches': [for (final p in batch) _toJson(p, clock)]},
         timeout: _timeoutFor(batch),
+        bearer: ctx.token,
       );
       await _recordServerTime(res.serverDate, sentAt, DateTime.now());
       await _applyResults(batch, res.json);
@@ -217,26 +245,33 @@ class SyncEngine {
       ));
       return _Outcome.progress;
     } on ApiException catch (e) {
-      if (e.isUnauthorized) {
-        _emit(_state.copyWith(needsReauth: true, lastError: e.message));
+      if (e.isUnauthorized || e.isForbidden) {
+        if (ctx.generation == _generation) {
+          _emit(_state.copyWith(needsReauth: true, lastError: e.message));
+        }
         return _Outcome.stop;
       }
 
-      if (e.isPermanent) {
+      if (e.isPermanent || e.isConflict) {
         // Lot refusé : on le coupe en deux pour isoler le pointage fautif.
         if (batch.length > 1) {
           final mid = batch.length ~/ 2;
           for (final half in [batch.sublist(0, mid), batch.sublist(mid)]) {
-            if (await _send(half) == _Outcome.stop) return _Outcome.stop;
+            if (await _send(half, ctx) == _Outcome.stop) return _Outcome.stop;
           }
           return _Outcome.progress;
         }
 
         final p = batch.single;
+        if (e.isConflict) {
+          // Déjà enregistré côté serveur (même clientUuid).
+          await db.markSynced([p.clientUuid]);
+          return _Outcome.progress;
+        }
         if (e.statusCode == 413 && p.photo != null) {
           // Photo trop lourde pour le serveur : le pointage passe sans.
           await db.dropPhoto(p.clientUuid);
-          return _send([p.copyWith(photo: const Value(null))]);
+          return _send([p.copyWith(photo: const Value(null))], ctx);
         }
         await db.markRejected(p.clientUuid, e.message);
         return _Outcome.progress;
@@ -293,6 +328,9 @@ class SyncEngine {
   /// Réponse par pointage si le serveur la fournit
   /// (`results: [{clientUuid, status, reason}]`), sinon tout le lot est
   /// considéré accepté (comportement du backend actuel).
+  /// Avec `results`, seul un statut explicitement positif vaut accord ; un
+  /// pointage absent ou au statut inconnu repart en file (le serveur
+  /// dédoublonne par clientUuid, un renvoi ne crée jamais de doublon).
   Future<void> _applyResults(List<Punch> batch, Map<String, dynamic> json) async {
     final results = json['results'];
     if (results is! List) {
@@ -300,27 +338,34 @@ class SyncEngine {
       return;
     }
 
-    final byUuid = <String, Map>{};
-    for (final r in results.whereType<Map>()) {
+    final byUuid = <String, Map<dynamic, dynamic>>{};
+    for (final r in results.whereType<Map<dynamic, dynamic>>()) {
       final id = (r['clientUuid'] ?? r['client_uuid'])?.toString();
       if (id != null) byUuid[id] = r;
     }
 
+    const ok = {'accepted', 'duplicate', 'ok', 'created', 'exists', 'synced'};
     const refused = {'rejected', 'refused', 'invalid', 'error'};
     final accepted = <String>[];
+    final unclear = <Punch>[];
     for (final p in batch) {
       final r = byUuid[p.clientUuid];
       final status = (r?['status'] ?? '').toString().toLowerCase();
-      if (r != null && refused.contains(status)) {
+      if (r != null && ok.contains(status)) {
+        accepted.add(p.clientUuid);
+      } else if (r != null && refused.contains(status)) {
         final reason =
             (r['reason'] ?? r['message'] ?? r['error'] ?? 'Refusé par le serveur')
                 .toString();
         await db.markRejected(p.clientUuid, reason);
       } else {
-        accepted.add(p.clientUuid);
+        unclear.add(p);
       }
     }
     await db.markSynced(accepted);
+    if (unclear.isNotEmpty) {
+      await _scheduleRetry(unclear, 'Réponse du serveur sans statut pour ce pointage.');
+    }
   }
 
   Future<void> _scheduleRetry(List<Punch> batch, String error) async {
@@ -375,9 +420,13 @@ class SyncService {
 
   /// Au lancement : état persistant, ménage, puis première sync.
   Future<void> start() async {
-    await engine.init();
-    await engine.db.housekeeping(AppConfig.punchRetention);
-    await engine.db.pruneShifts(const Duration(days: 2));
+    try {
+      await engine.init();
+      await engine.db.housekeeping(AppConfig.punchRetention);
+      await engine.db.pruneShifts(const Duration(days: 2));
+    } catch (_) {
+      // Le ménage peut attendre ; l'envoi passe avant tout.
+    }
     kick();
   }
 

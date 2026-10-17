@@ -51,7 +51,7 @@ Future<void> _addPunch(
 SyncEngine _engine(AppDatabase db, MockClient client) => SyncEngine(
       db: db,
       api: ApiClient(tokenReader: () async => 'token', client: client),
-      ownerReader: () async => agent,
+      sessionReader: () async => (owner: agent, token: 'token'),
     );
 
 Future<Punch> _get(AppDatabase db, String uuid) =>
@@ -230,5 +230,48 @@ void main() {
     await engine.sync();
     expect(batches.single, ['ancien']);
     expect((await _get(db, 'ancien')).matricule, 'EMP001');
+  });
+
+  test('page HTML en 4xx (portail captif) : temporaire, jamais refusé', () async {
+    await _addPunch(db, 'h1', minute: 0);
+    await _addPunch(db, 'h2', minute: 1);
+    final engine = _engine(
+      db,
+      MockClient((r) async => http.Response('<html>Wi-Fi login</html>', 404)),
+    );
+    await engine.sync();
+    for (final id in ['h1', 'h2']) {
+      final p = await _get(db, id);
+      expect(p.rejected, isFalse, reason: id);
+      expect(p.synced, isFalse, reason: id);
+      expect(p.attempts, 1, reason: id);
+    }
+  });
+
+  test('pointage absent de results : renvoyé plus tard, pas marqué envoyé',
+      () async {
+    await _addPunch(db, 'vu', minute: 0);
+    await _addPunch(db, 'oublie', minute: 1);
+    final engine = _engine(db, MockClient((r) async => _json({
+          'results': [
+            {'clientUuid': 'vu', 'status': 'accepted'},
+          ],
+        })));
+    await engine.sync();
+    expect((await _get(db, 'vu')).synced, isTrue);
+    final oublie = await _get(db, 'oublie');
+    expect(oublie.synced, isFalse);
+    expect(oublie.attempts, 1);
+  });
+
+  test('409 sur un pointage seul : déjà connu du serveur, marqué envoyé',
+      () async {
+    await _addPunch(db, 'connu');
+    final engine = _engine(
+      db,
+      MockClient((r) async => _json({'message': 'Déjà enregistré'}, 409)),
+    );
+    await engine.sync();
+    expect((await _get(db, 'connu')).synced, isTrue);
   });
 }

@@ -505,7 +505,7 @@ class _Banner extends StatelessWidget {
           Icon(icon, color: color, size: 20),
           const SizedBox(width: 10),
           Expanded(child: Text(text, style: const TextStyle(fontSize: 13))),
-          if (action != null) action!,
+          ?action,
         ],
       ),
     );
