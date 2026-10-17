@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/api_client.dart';
+import '../../providers.dart';
 import 'auth_controller.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -16,6 +18,32 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _matriculeController = TextEditingController();
   final _pinController = TextEditingController();
   bool _obscurePin = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _prefill();
+  }
+
+  /// Dernier agent de ce téléphone (session expirée, déconnexion) :
+  /// il n'a plus qu'à saisir son PIN.
+  Future<void> _prefill() async {
+    final ({String? tenantSlug, String? matricule}) last;
+    try {
+      last = await ref.read(authRepositoryProvider).lastIdentity();
+    } catch (_) {
+      return; // stockage indisponible (tests) : champs laissés tels quels
+    }
+    if (!mounted) return;
+    if (last.tenantSlug != null && last.tenantSlug!.isNotEmpty) {
+      _tenantController.text = last.tenantSlug!;
+    }
+    if (last.matricule != null &&
+        last.matricule!.isNotEmpty &&
+        _matriculeController.text.isEmpty) {
+      _matriculeController.text = last.matricule!;
+    }
+  }
 
   @override
   void dispose() {
@@ -115,7 +143,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   const SizedBox(height: 24),
                   if (error != null) ...[
                     Text(
-                      error.toString(),
+                      error is ApiException && error.isNetwork
+                          ? '${error.message}\nLa connexion demande du réseau '
+                              'une fois ; ensuite le pointage marche sans.'
+                          : error.toString(),
                       textAlign: TextAlign.center,
                       style: TextStyle(
                           color: Theme.of(context).colorScheme.error),

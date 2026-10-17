@@ -11,8 +11,14 @@ synchronisé vers le backend (`/api/attendance/sync`, dédup par `clientUuid`).
    - vérification de présence (caméra frontale + clignement des yeux, ML Kit) ;
    - capture GPS (fallback dernière position connue si signal faible) ;
    - écriture locale immédiate, puis tentative de sync.
-3. Sync automatique : au lancement, au retour du réseau (connectivity_plus)
-   et toutes les 2 minutes.
+3. Sync automatique : au lancement, au retour au premier plan, au retour du
+   réseau (connectivity_plus), après chaque pointage et toutes les 2 minutes —
+   par petits lots, backoff exponentiel, refus isolés, 401 géré sans perte.
+4. Planning et sites téléchargés (hier → J+7) et lus depuis le cache local :
+   vacation du jour et contrôle de zone disponibles hors ligne.
+
+Détail du fonctionnement hors ligne et du contrat backend :
+[`docs/OFFLINE_SYNC.md`](docs/OFFLINE_SYNC.md).
 
 Identifiants de test : slug `demo`, matricule `EMP001`, PIN `1234`.
 

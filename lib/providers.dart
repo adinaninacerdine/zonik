@@ -5,6 +5,7 @@ import 'core/api_client.dart';
 import 'data/database.dart';
 import 'features/attendance/punch_repository.dart';
 import 'features/attendance/sync_service.dart';
+import 'features/auth/auth_controller.dart';
 import 'features/auth/auth_repository.dart';
 import 'features/face/face_repository.dart';
 import 'features/face/face_service.dart';
@@ -33,16 +34,46 @@ final authRepositoryProvider = Provider<AuthRepository>((ref) {
 });
 
 final punchRepositoryProvider = Provider<PunchRepository>((ref) {
-  return PunchRepository(
+  return PunchRepository(db: ref.watch(databaseProvider));
+});
+
+final planningRepositoryProvider = Provider<PlanningRepository>((ref) {
+  final auth = ref.watch(authRepositoryProvider);
+  return PlanningRepository(
     db: ref.watch(databaseProvider),
     api: ref.watch(apiClientProvider),
+    ownerReader: auth.currentOwner,
   );
 });
 
+/// Moteur d'envoi des pointages (un seul pour toute l'app).
+final syncEngineProvider = Provider<SyncEngine>((ref) {
+  final auth = ref.watch(authRepositoryProvider);
+  final engine = SyncEngine(
+    db: ref.watch(databaseProvider),
+    api: ref.watch(apiClientProvider),
+    ownerReader: auth.currentOwner,
+  );
+  ref.onDispose(engine.dispose);
+  return engine;
+});
+
+/// Déclencheurs de sync (réseau, minuterie). Démarré par l'écran d'accueil.
 final syncServiceProvider = Provider<SyncService>((ref) {
-  final service = SyncService(repository: ref.watch(punchRepositoryProvider));
+  final service = SyncService(
+    engine: ref.watch(syncEngineProvider),
+    planning: ref.watch(planningRepositoryProvider),
+  );
   ref.onDispose(service.dispose);
   return service;
+});
+
+/// État de la sync pour l'interface (en cours, dernière réussite, erreur,
+/// reconnexion nécessaire, décalage d'horloge).
+final syncStateProvider = StreamProvider<SyncState>((ref) async* {
+  final engine = ref.watch(syncEngineProvider);
+  yield engine.state;
+  yield* engine.states;
 });
 
 /// Modèle de reconnaissance faciale (chargé une fois, ~5 Mo en mémoire).
@@ -59,22 +90,41 @@ final faceRepositoryProvider = Provider<FaceRepository>((ref) {
   );
 });
 
-final planningRepositoryProvider = Provider<PlanningRepository>((ref) {
-  return PlanningRepository(api: ref.watch(apiClientProvider));
+/// Agent connecté (null hors session).
+final ownerProvider = Provider<Owner?>((ref) {
+  return ref.watch(authControllerProvider).value?.owner;
 });
 
-/// Vacations du jour de l'agent connecté (planning). Hors ligne : erreur
-/// silencieuse, l'écran d'accueil masque simplement la carte.
-final todayShiftsProvider = FutureProvider.autoDispose<List<MyShift>>((ref) {
-  return ref.watch(planningRepositoryProvider).today();
+/// Vacations du jour de l'agent connecté, lues dans le cache local :
+/// disponibles hors ligne.
+final todayShiftsProvider = StreamProvider<List<MyShift>>((ref) {
+  final owner = ref.watch(ownerProvider);
+  if (owner == null) return Stream.value(const <MyShift>[]);
+  return ref.watch(planningRepositoryProvider).watchToday(owner);
 });
 
-/// Nombre de pointages en attente de synchronisation.
+/// Date du dernier téléchargement du planning (fraîcheur du cache).
+final planningFetchedAtProvider = StreamProvider<DateTime?>((ref) {
+  return ref.watch(planningRepositoryProvider).watchFetchedAt();
+});
+
+/// Nombre de pointages de l'agent connecté en attente de synchronisation.
 final pendingCountProvider = StreamProvider<int>((ref) {
-  return ref.watch(databaseProvider).watchPendingCount();
+  final owner = ref.watch(ownerProvider);
+  if (owner == null) return Stream.value(0);
+  return ref.watch(databaseProvider).watchPendingCount(owner);
 });
 
-/// Derniers pointages (pour l'historique de l'écran d'accueil).
+/// Pointages d'autres agents de ce téléphone encore en attente.
+final othersPendingCountProvider = StreamProvider<int>((ref) {
+  final owner = ref.watch(ownerProvider);
+  if (owner == null) return Stream.value(0);
+  return ref.watch(databaseProvider).watchOthersPendingCount(owner);
+});
+
+/// Derniers pointages de l'agent connecté (historique de l'écran d'accueil).
 final recentPunchesProvider = StreamProvider<List<Punch>>((ref) {
-  return ref.watch(databaseProvider).watchRecent();
+  final owner = ref.watch(ownerProvider);
+  if (owner == null) return Stream.value(const <Punch>[]);
+  return ref.watch(databaseProvider).watchRecent(owner);
 });

@@ -1,6 +1,7 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../../core/api_client.dart';
+import '../../data/database.dart';
 
 class Session {
   const Session({
@@ -17,6 +18,8 @@ class Session {
   /// PIN d'amorçage (import, réinitialisation par un admin) : l'agent doit
   /// en choisir un avant d'accéder au pointage.
   final bool mustChangePin;
+
+  Owner get owner => Owner(tenantSlug, matricule);
 
   Session copyWith({bool? mustChangePin}) => Session(
         tenantSlug: tenantSlug,
@@ -47,6 +50,28 @@ class AuthRepository {
       matricule: await storage.read(key: _kMatricule) ?? '',
       fullName: await storage.read(key: _kFullName) ?? '',
       mustChangePin: (await storage.read(key: _kMustChangePin)) == 'true',
+    );
+  }
+
+  /// Agent connecté (token présent), pour la synchronisation. Null hors
+  /// session : rien ne part sans le token de son propriétaire.
+  Future<Owner?> currentOwner() async {
+    final token = await storage.read(key: _kToken);
+    if (token == null) return null;
+    final tenant = await storage.read(key: _kTenantSlug);
+    final matricule = await storage.read(key: _kMatricule);
+    if (tenant == null || tenant.isEmpty || matricule == null || matricule.isEmpty) {
+      return null;
+    }
+    return Owner(tenant, matricule);
+  }
+
+  /// Dernier agent connecté (même déconnecté), pour pré-remplir le login :
+  /// après une session expirée, l'agent n'a plus qu'à taper son PIN.
+  Future<({String? tenantSlug, String? matricule})> lastIdentity() async {
+    return (
+      tenantSlug: await storage.read(key: _kTenantSlug),
+      matricule: await storage.read(key: _kMatricule),
     );
   }
 
@@ -91,8 +116,9 @@ class AuthRepository {
     await storage.write(key: _kMustChangePin, value: 'false');
   }
 
-  /// Supprime uniquement le token : les pointages locaux non synchronisés
-  /// restent en base et partiront à la prochaine session.
+  /// Supprime uniquement le token. Les pointages non synchronisés restent en
+  /// base, attachés à leur agent : ils partiront à SA prochaine connexion,
+  /// jamais sous l'identité d'un autre agent du même téléphone.
   Future<void> logout() async {
     await storage.delete(key: _kToken);
   }

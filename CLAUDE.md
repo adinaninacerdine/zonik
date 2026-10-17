@@ -9,6 +9,9 @@ Repo backend : github.com/adinaninacerdine/pointage-saas
 - POST /api/auth/employee/login {tenantSlug, matricule, pin} → {token}
 - POST /api/attendance/punch {type: in|out, method: gps, clientUuid, payload:{lat,lng}} (Bearer token)
 - POST /api/attendance/sync {punches: [...]} — lot offline, dédup par clientUuid
+  (réponse par pointage `results: [{clientUuid, status, reason}]` prise en charge)
+- GET /api/mobile/context?from&to → {sites, shifts} (repli sur
+  GET /api/scheduling/me/shifts tant qu'il renvoie 404)
 - Identifiants de test : slug=demo, matricule=EMP001, PIN=1234
 - Site test : Siège Moroni (-11.7022, 43.2551), rayon 150m
 
@@ -16,6 +19,14 @@ Repo backend : github.com/adinaninacerdine/pointage-saas
 - Gestion d'état : Riverpod
 - Offline-first : chaque pointage écrit en local (Drift/SQLite) avec client_uuid,
   puis synchronisé via /sync. L'app ne dépend JAMAIS du réseau pour pointer.
+- Depuis la 1.2 (voir docs/OFFLINE_SYNC.md) : pointages attachés à l'agent
+  (tenant+matricule), moteur SyncEngine (lots, backoff, bisection des 4xx,
+  413 → renvoi sans photo, 401 → suspension), horloge monotone native
+  (canal com.zonik.pointage/clock dans MainActivity.kt), cache Drift des
+  sites et vacations, contrôle de zone local indicatif. Schéma Drift v3 :
+  après toute modif de database.dart → dart run build_runner build.
+- Tests du moteur de sync : test/sync_engine_test.dart (base en mémoire +
+  MockClient) — à garder verts avant chaque release.
 - Liveness V1 : ML Kit détection visage + clignement (pas de reconnaissance d'identité)
 - Test sur téléphone physique (pas d'émulateur — espace disque limité)
 

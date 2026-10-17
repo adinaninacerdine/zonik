@@ -23,6 +23,12 @@ class AuthController extends AsyncNotifier<Session?> {
             pin: pin.trim(),
           );
     });
+    if (state.hasValue && state.value != null) {
+      // Nouveau token : les pointages en attente de cet agent partent tout
+      // de suite, et son planning/ses sites sont téléchargés.
+      ref.read(syncEngineProvider).onReauthenticated();
+      ref.read(syncServiceProvider).kick(force: true);
+    }
   }
 
   /// Changement de PIN par l'agent. En cas de succès, la session sort du

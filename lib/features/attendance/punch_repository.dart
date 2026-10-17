@@ -1,96 +1,78 @@
-import 'dart:convert';
-
 import 'package:drift/drift.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:uuid/uuid.dart';
 
-import '../../core/api_client.dart';
+import '../../core/device_clock.dart';
 import '../../data/database.dart';
+import 'geofence.dart';
 
-enum PunchOutcome {
-  /// Enregistré localement ET synchronisé avec le serveur.
-  synced,
+/// Ce que l'écran affiche après un pointage.
+class PunchReceipt {
+  const PunchReceipt({required this.clientUuid, required this.zone});
 
-  /// Enregistré localement, la sync se fera plus tard (offline).
-  savedLocally,
+  final String clientUuid;
+  final ZoneCheck zone;
 }
 
+/// Création des pointages. Écrit TOUJOURS en local, sans jamais attendre le
+/// réseau : l'envoi est l'affaire du moteur de synchronisation.
 class PunchRepository {
-  PunchRepository({required this.db, required this.api});
+  PunchRepository({required this.db});
+
+  /// Clé méta : écart (ms) horloge serveur − horloge téléphone mesuré à la
+  /// dernière synchronisation réussie.
+  static const kServerOffsetMs = 'serverOffsetMs';
 
   final AppDatabase db;
-  final ApiClient api;
   final _uuid = const Uuid();
 
-  bool _syncing = false;
-
-  /// Écrit TOUJOURS en local d'abord — le pointage ne dépend jamais du réseau.
-  Future<PunchOutcome> punch({
+  Future<PunchReceipt> punch({
+    required Owner owner,
     required String type, // 'in' | 'out'
-    required double lat,
-    required double lng,
-    double? accuracy,
+    required Position position,
     double? faceScore,
     bool? faceMatch,
     Uint8List? photoJpeg,
   }) async {
+    final clock = await DeviceClock.sample();
+    final offset = int.tryParse(await db.getMeta(kServerOffsetMs) ?? '');
+
+    // Contrôle de zone local, sur le site de la vacation en cours s'il y en a
+    // une, sinon sur le site le plus proche. Indicatif : le serveur tranche.
+    final sites = await db.sitesFor(owner.tenantSlug);
+    final shift = await db.currentShift(owner, clock.wallClock);
+    final zone = checkZone(
+      sites: sites,
+      lat: position.latitude,
+      lng: position.longitude,
+      accuracy: position.accuracy,
+      expectedSiteId: shift?.siteId,
+    );
+
+    final clientUuid = _uuid.v4();
     await db.insertPunch(PunchesCompanion.insert(
-      clientUuid: _uuid.v4(),
+      clientUuid: clientUuid,
+      tenantSlug: Value(owner.tenantSlug),
+      matricule: Value(owner.matricule),
       type: type,
-      lat: lat,
-      lng: lng,
-      accuracy: Value(accuracy),
-      punchedAt: DateTime.now(),
+      lat: position.latitude,
+      lng: position.longitude,
+      accuracy: Value(position.accuracy),
+      punchedAt: clock.wallClock,
+      elapsedMs: Value(clock.elapsedMs),
+      bootCount: Value(clock.bootCount),
+      clockOffsetMs: Value(offset),
+      fixAt: Value(position.timestamp),
+      isMocked: Value(position.isMocked),
+      siteId: Value(zone.site?.id),
+      siteName: Value(zone.site?.name),
+      distanceM: Value(zone.distanceM),
+      inZone: Value(zone.inZone),
       faceScore: Value(faceScore),
       faceMatch: Value(faceMatch),
       photo: Value(photoJpeg),
     ));
 
-    final synced = await trySync();
-    return synced ? PunchOutcome.synced : PunchOutcome.savedLocally;
-  }
-
-  /// Envoie tous les pointages en attente via /api/attendance/sync
-  /// (dédup serveur par clientUuid — un renvoi n'est jamais un doublon).
-  /// Retourne true si plus rien n'est en attente.
-  Future<bool> trySync() async {
-    if (_syncing) return false;
-    _syncing = true;
-    try {
-      final pending = await db.pendingPunches();
-      if (pending.isEmpty) return true;
-
-      final uuids = pending.map((p) => p.clientUuid).toList();
-      try {
-        await api.post('/api/attendance/sync', {
-          'punches': [
-            for (final p in pending)
-              {
-                'clientUuid': p.clientUuid,
-                'type': p.type,
-                'method': 'gps',
-                'punchedAt': p.punchedAt.toUtc().toIso8601String(),
-                'payload': {
-                  'lat': p.lat,
-                  'lng': p.lng,
-                  if (p.accuracy != null) 'accuracy': p.accuracy,
-                  if (p.faceScore != null) 'faceScore': p.faceScore,
-                  if (p.faceMatch != null) 'faceMatch': p.faceMatch,
-                  if (p.photo != null) 'photo': base64Encode(p.photo!),
-                },
-              },
-          ],
-        });
-        await db.markSynced(uuids);
-        return true;
-      } on ApiException catch (e) {
-        await db.markSyncError(uuids, e.message);
-        return false;
-      } catch (e) {
-        await db.markSyncError(uuids, e.toString());
-        return false;
-      }
-    } finally {
-      _syncing = false;
-    }
+    return PunchReceipt(clientUuid: clientUuid, zone: zone);
   }
 }
