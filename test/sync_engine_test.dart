@@ -274,4 +274,36 @@ void main() {
     await engine.sync();
     expect((await _get(db, 'connu')).synced, isTrue);
   });
+
+  test('format du backend actuel : ok true/false par pointage', () async {
+    await _addPunch(db, 'bon', minute: 0);
+    await _addPunch(db, 'sans-site', minute: 1);
+    final engine = _engine(db, MockClient((r) async => _json({
+          'synced': 1,
+          'total': 2,
+          'results': [
+            {'clientUuid': 'bon', 'ok': true, 'id': 'x'},
+            {'clientUuid': 'sans-site', 'ok': false, 'error': 'Employé sans site assigné'},
+          ],
+        })));
+    await engine.sync();
+    expect((await _get(db, 'bon')).synced, isTrue);
+    final ko = await _get(db, 'sans-site');
+    expect(ko.rejected, isTrue);
+    expect(ko.lastError, 'Employé sans site assigné');
+  });
+
+  test('statut retry du serveur : renvoyé plus tard', () async {
+    await _addPunch(db, 'r');
+    final engine = _engine(db, MockClient((r) async => _json({
+          'results': [
+            {'clientUuid': 'r', 'status': 'retry', 'reason': 'Base indisponible'},
+          ],
+        })));
+    await engine.sync();
+    final p = await _get(db, 'r');
+    expect(p.synced, isFalse);
+    expect(p.rejected, isFalse);
+    expect(p.attempts, 1);
+  });
 }

@@ -325,11 +325,16 @@ class SyncEngine {
         },
       };
 
-  /// Réponse par pointage si le serveur la fournit
-  /// (`results: [{clientUuid, status, reason}]`), sinon tout le lot est
-  /// considéré accepté (comportement du backend actuel).
-  /// Avec `results`, seul un statut explicitement positif vaut accord ; un
-  /// pointage absent ou au statut inconnu repart en file (le serveur
+  /// Réponse par pointage si le serveur la fournit, sinon tout le lot est
+  /// considéré accepté.
+  ///
+  /// Deux formats reconnus :
+  /// - backend actuel : `results: [{clientUuid, ok: true|false, error}]` ;
+  /// - backend 1.2 : `results: [{clientUuid, status, reason}]` avec status
+  ///   accepted | duplicate | rejected | retry.
+  ///
+  /// Seul un accord explicite marque un pointage envoyé ; un pointage absent
+  /// de la réponse ou au statut inconnu repart en file (le serveur
   /// dédoublonne par clientUuid, un renvoi ne crée jamais de doublon).
   Future<void> _applyResults(List<Punch> batch, Map<String, dynamic> json) async {
     final results = json['results'];
@@ -344,19 +349,33 @@ class SyncEngine {
       if (id != null) byUuid[id] = r;
     }
 
-    const ok = {'accepted', 'duplicate', 'ok', 'created', 'exists', 'synced'};
-    const refused = {'rejected', 'refused', 'invalid', 'error'};
+    const okStatuses = {'accepted', 'duplicate', 'ok', 'created', 'exists', 'synced'};
+    const refusedStatuses = {'rejected', 'refused', 'invalid'};
     final accepted = <String>[];
     final unclear = <Punch>[];
     for (final p in batch) {
       final r = byUuid[p.clientUuid];
-      final status = (r?['status'] ?? '').toString().toLowerCase();
-      if (r != null && ok.contains(status)) {
+      if (r == null) {
+        unclear.add(p);
+        continue;
+      }
+      final status = r['status']?.toString().toLowerCase();
+      final reason =
+          (r['reason'] ?? r['error'] ?? r['message'] ?? 'Refusé par le serveur')
+              .toString();
+      if (status != null) {
+        if (okStatuses.contains(status)) {
+          accepted.add(p.clientUuid);
+        } else if (refusedStatuses.contains(status)) {
+          await db.markRejected(p.clientUuid, reason);
+        } else {
+          unclear.add(p); // retry, error… : on renverra
+        }
+      } else if (r['ok'] == true) {
         accepted.add(p.clientUuid);
-      } else if (r != null && refused.contains(status)) {
-        final reason =
-            (r['reason'] ?? r['message'] ?? r['error'] ?? 'Refusé par le serveur')
-                .toString();
+      } else if (r['ok'] == false) {
+        // Backend actuel : il ne distingue pas refus et panne ; on garde le
+        // pointage avec son motif, renvoyable d'un geste par l'agent.
         await db.markRejected(p.clientUuid, reason);
       } else {
         unclear.add(p);
@@ -364,7 +383,8 @@ class SyncEngine {
     }
     await db.markSynced(accepted);
     if (unclear.isNotEmpty) {
-      await _scheduleRetry(unclear, 'Réponse du serveur sans statut pour ce pointage.');
+      await _scheduleRetry(
+          unclear, 'Réponse du serveur sans statut pour ce pointage.');
     }
   }
 
