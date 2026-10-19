@@ -18,6 +18,27 @@ class ZoneCheck {
   bool get isKnown => inZone != null;
 }
 
+double _allowance(double? accuracy) =>
+    math.min(accuracy ?? 0, AppConfig.geofenceMaxAccuracyAllowance);
+
+/// Premier site (le plus proche) dont la zone contient la position, ou null.
+ZoneCheck? _insideAny(
+  List<CachedSite> sites,
+  double lat,
+  double lng,
+  double? accuracy,
+) {
+  ZoneCheck? best;
+  for (final s in sites) {
+    final d = distanceMeters(lat, lng, s.lat, s.lng);
+    if (d <= s.radiusM + _allowance(accuracy) &&
+        (best == null || d < best.distanceM!)) {
+      best = ZoneCheck(site: s, distanceM: d, inZone: true);
+    }
+  }
+  return best;
+}
+
 /// Distance en mètres entre deux points (haversine) — précision largement
 /// suffisante pour des rayons de 50 à 500 m.
 double distanceMeters(double lat1, double lng1, double lat2, double lng2) {
@@ -57,6 +78,13 @@ ZoneCheck checkZone({
         break;
       }
     }
+    // Site de la vacation sans position relevée (absent du cache) : on ne
+    // conclut rien, comme le serveur (« site non localisé »). Seule
+    // exception : l'agent est dans la zone d'un autre site connu.
+    if (target == null) {
+      final inside = _insideAny(sites, lat, lng, accuracy);
+      return inside ?? ZoneCheck.unknown;
+    }
   }
 
   if (target == null) {
@@ -69,13 +97,9 @@ ZoneCheck checkZone({
     }
   }
 
-  final allowance = math.min(
-    accuracy ?? 0,
-    AppConfig.geofenceMaxAccuracyAllowance,
-  );
   return ZoneCheck(
     site: target,
     distanceM: targetDistance,
-    inZone: targetDistance! <= target!.radiusM + allowance,
+    inZone: targetDistance! <= target!.radiusM + _allowance(accuracy),
   );
 }

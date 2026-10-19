@@ -64,4 +64,25 @@ void main() {
     expect(z.site!.id, 's2');
     expect(z.inZone, isFalse);
   });
+
+  test('site de la vacation non localisé : pas de verdict', () {
+    final z = checkZone(
+      sites: const [siege, port],
+      lat: -11.7200,
+      lng: 43.2700,
+      expectedSiteId: 'site-sans-position',
+    );
+    expect(z.isKnown, isFalse);
+  });
+
+  test('site de la vacation non localisé mais agent dans un site connu', () {
+    final z = checkZone(
+      sites: const [siege, port],
+      lat: -11.7030,
+      lng: 43.2555,
+      expectedSiteId: 'site-sans-position',
+    );
+    expect(z.site!.id, 's1');
+    expect(z.inZone, isTrue);
+  });
 }
